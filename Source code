@@ -1,0 +1,779 @@
+' LED_Clock-18 на AtMega168V V.5  Отображаем время из PCF8583.
+' Вводим время и дату с клавиатуры.
+' Подсвечивает LCD от нестабилизированного источника 7-12 Вольт.
+'
+' Конфигурационные биты при программировании в PONY: SPIEN, EESAVE = птички,
+' остальные без птичек. Начинать прогр-е ~ на 20-й секунде предыдущей минуты!
+' Прерывать верификацию по 6 сигналу точного времени!
+$large                                                      ' установить большую модель памяти!
+$regfile = "m168def.dat"                                    ' установить модель микроконтроллера
+$crystal = 8000000                                          ' частота генератора 8 МГц
+
+$hwstack = 32                                               ' default use 32 for the hardware stack
+$swstack = 10                                               ' default use 10 for the SW stack
+$framesize = 40                                             ' default use 40 for the frame space
+' Порты:
+' PortC.3 - Вход "2" ИД4, PortC.4 - Вход "4" ИД4, PortC.5 - Вход "1" ИД4.
+Config Portc.5 = Output                                     ' настройка пина С5 на выход (Вход "1" ИД4)
+Config Portc.3 = Output                                     ' настройка пина С3 на выход (Вход "2" ИД4)
+Config Portc.4 = Output                                     ' настройка пина С4 на выход (Вход "4" ИД4)
+Config Portc.2 = Output                                     ' настройка пина С2 на выход (Вход "Enable" ИД4)
+Config Scl = Portc.1
+Config Sda = Portc.0
+Config I2cdelay = 1
+Config Lcdpin = Pin , Db4 = Portb.0 , Db5 = Portb.1 , Db6 = Portb.2 , Db7 = Portb.3 , E = Portb.4 , Rs = Portb.5
+Config Lcd = 16 * 2
+Config Kbd = Portd
+Speaker Alias Portc.2                                       '- Выход на пьезодинамик. Одновременно используется для гашения всех светодиодов,
+'                                  подключённых к выходам ИД4 выдачей на него лог.1. Активация дешифратора - лог.0 на PortC.2
+In1 Alias Portc.5
+In2 Alias Portc.3
+In4 Alias Portc.4
+Declare Sub Settime(byval H As Byte , Byval M As Byte , Byval S As Byte , Byval D As Byte , Byval Month As Byte)
+Declare Sub Gettime                                         ' declare used subs
+Declare Function Solve(f As Integer) As Single
+Declare Function Arctan(x As Single) As Single
+Dim H As Byte , M As Byte , S As Byte , D As Byte , Month As Byte , Temp As Byte       ' Declare variables
+Dim Yd As Byte , Wm As Byte , Minut As Byte , Secund As Byte , Key As Byte , Dig As Byte
+Dim Count As Byte , Count2 As Byte , I As Byte , J As Byte , K As Byte , Key_ok As Byte
+Dim Pulses As Word , Periods As Word                        ' Для Sound
+Dim Longtitude As Single
+Dim Latitude As Single , Tmpd As Single , Tmpm As Single , Tmps As Single
+Dim Utc As Integer
+Begin:
+Utc = -1
+' #############################################################################################
+Pulses = 150 : Periods = 800 : Speaker = 1                  ' Откл-е светодиодного индикатора положения Солнца
+Gosub Init
+Gosub Promt                                                 ' В Промте есть и CLS, и Cursor off.
+Autocont:
+' ------ Если в теч-е 3 сек не нажата ни одна кнопка, пропускаем меню: ------
+Count2 = 0 : Locate 2 , 1 : Lcd "Any Key for Menu"
+Auto1:
+Waitms 50 : Gosub Inkeyb : Incr Count2
+If Count2 > 59 Then Goto Auto1                              '
+If Key < 16 Then Goto Menu
+' ************************************************************************************************
+'Count = 0
+Do
+   Gosub Inkeyb : If Key < 16 Then Goto Menu
+   Waitms 300
+' In4 = Key.2 : In2 = Key.1 : In1 = Key.0 : Speaker = 0 ' Отображение кода нажатой клавиши на LED
+' Waitms 995
+' Incr Count : In4 = Count.2 : In2 = Count.1 : In1 = Count.0 : Speaker = Count.3
+' Speaker = 0 - Активирует дешифратор. "Днём" светим, "ночью" - нет.
+Indik:
+   Call Gettime                                             ': Speaker = 1
+   Locate 1 , 1 : Lcd "Date: " ; Bcd(yd) ; "-" ; Bcd(wm) ; "-2018"
+   Locate 2 , 1 : Lcd "Time: " ; Bcd(h) ; ":" ; Bcd(m) ; ":" ; Bcd(s) ; "  "
+   Gosub Inkeyb : If Key < 16 Then Goto Menu
+   Waitms 300
+   Gosub Inkeyb : If Key < 16 Then Goto Menu
+   Waitms 300
+Loop
+' ************************************************************************************************
+Menu:
+   Gosub Ждатьотж : Locate 1 , 1 : Lcd "A-InLat B-InLong"
+   Locate 2 , 1 : Lcd "C-InTime D-InDat"
+M1:
+   Gosub Inpk
+'   On Key Goto InDat, InTime, InDlg, InShir, ...
+   If Key >= 0 And Key < 4 Then Cls
+'      GoSub Clear2
+      Select Case Key                                       ' начать проверку и выбор
+      Case 12 : Goto Solution                               ' *
+      Case 4 : Goto Exmenu                                  ' #
+      Case 3 : Goto Inshir                                  ' A
+      Case 2 : Goto Indlg                                   ' B
+      Case 1 : Goto Intime                                  ' C
+      Case 0 : Goto Indat                                   ' D
+      Case 5 To 11 : Goto Menu                              ' проверка диапазона. Ключевое слово TO
+      Case 13 To 15 : Goto Menu                             ' Обратно в меню
+
+   End Select                                               'закончить
+
+Exmenu:
+                                      ' Отладочная строка $$$$$$$$$$$$$$$
+Goto Indik
+' ------------------------------------------------------------------------------------------
+' ------------ Ввод кода нажатой клавиши с ожиданием её нажатия и отпускания ---------------
+Inpk:
+   Cursor On Blink
+Inp1:
+   Key = Getkbd() : J = Getkbd() : K = Getkbd()             '  : Waitms 5
+   If Key = J And Key = K Then Key_ok = 1 Else Key_ok = 0   ' Защита от помех и дребезга
+   If Key = 16 Or Key_ok = 0 Then Goto Inp1                 ' Ждём нажатия
+   Gosub Pik : Gosub Ждатьотж                               ' Ждём отжатия
+   Cursor Off Noblink
+Return
+' -------- Ввод кода нажатой клавиши "на лету" без ожидания её нажатия и отпускания --------
+Inkeyb:                                                     ' Если не нажата, выходим с кодом 16 без звука
+   Key = Getkbd() : If Key < 16 Then Gosub Pik
+   '   Goto InKeyb
+Return
+' ------------------------------------------------------------------------------------------
+Pik:
+   Sound Speaker , Pulses , Periods : Speaker = 1           ' Звук, затем Выкл LED-Ind
+Return
+' -------------------------------------------------------------------------------------
+Intime:
+   Locate 1 , 1 : Lcd "Time H,Min.Sec=0" ; : Gosub Inpdig
+   Locate 2 , 1 : Lcd Dig ; : Shift Dig , Left , 4 : H = Dig : Gosub Inpdig
+   Lcd Dig ; ":" ; : H = H + Dig : Gosub Inpdig : Lcd Dig ; : Shift Dig , Left , 4
+   M = Dig : Gosub Inpdig : Lcd Dig ; : M = M + Dig
+   Call Settime(h , M , 00 , D , Month) : Waitms 10
+Goto Exmenu
+' -------------------------------------------------------------------------------------
+Indat:
+   Locate 1 , 1 : Lcd "Input Date DD/MM" ; : Gosub Inpdig : If Dig > 9 Then Goto Exmenu
+   Locate 2 , 1 : Lcd Dig ; : Shift Dig , Left , 4 : D = Dig : Gosub Inpdig
+   Lcd Dig ; "/" ; : D = D + Dig : Gosub Inpdig : Lcd Dig ; : Shift Dig , Left , 4
+   Month = Dig : Gosub Inpdig : Lcd Dig ; : Month = Month + Dig
+   Call Settime(h , M , S , D , Month) : Waitms 10
+Goto Exmenu
+' --------------------------------------------------------------------------------------
+Inshir:
+Latitude = 0
+Tmpm = 0
+Tmpd = 0
+   Locate 1 , 1 : Lcd "Latitude " ; : : Gosub Inpdig : If Dig > 9 Then Goto Exmenu
+      Locate 2 , 1 : Lcd Dig : Shift Dig , Left , 4 : Tmpd = Dig : Gosub Inpdig
+   Lcd Dig ; "/" ; : Tmpd = Tmpd + Dig : Gosub Inpdig : Lcd Dig ; : Shift Dig , Left , 4
+   Tmpm = Dig : Gosub Inpdig : Lcd Dig ; : Tmpm = Tmpm + Dig : Shift Dig , Left , 4
+   If Tmpd >= 144 Then
+      Tmpd = Tmpd - 54
+   Else
+         If Tmpd >= 128 Then
+         Tmpd = Tmpd - 48
+         Else
+         If Tmpd >= 112 Then
+         Tmpd = Tmpd - 42
+            Else
+            If Tmpd >= 96 Then
+            Tmpd = Tmpd - 36
+             Else
+             If Tmpd >= 80 Then
+             Tmpd = Tmpd - 30
+             Else
+             If Tmpd >= 64 Then
+               Tmpd = Tmpd - 24
+               Else
+               If Tmpd >= 48 Then
+               Tmpd = Tmpd - 18
+               Else
+               If Tmpd >= 32 Then
+               Tmpd = Tmpd - 12
+               Else
+               If Tmpd >= 16 Then
+               Tmpd = Tmpd - 6
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+   If Tmpm >= 144 Then
+      Tmpm = Tmpm - 54
+   Else
+         If Tmpm >= 128 Then
+         Tmpm = Tmpm - 48
+         Else
+         If Tmpm >= 112 Then
+         Tmpm = Tmpm - 42
+            Else
+            If Tmpm >= 96 Then
+            Tmpm = Tmpm - 36
+             Else
+             If Tmpm >= 80 Then
+             Tmpm = Tmpm - 30
+             Else
+             If Tmpm >= 64 Then
+               Tmpm = Tmpm - 24
+               Else
+               If Tmpm >= 48 Then
+               Tmpm = Tmpm - 18
+               Else
+               If Tmpm >= 32 Then
+               Tmpm = Tmpm - 12
+               Else
+               If Tmpm >= 16 Then
+               Tmpm = Tmpm - 6
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+Wait 1
+   Cls
+   Lcd Tmpd
+   Lcd " "
+   Lcd Tmpm
+  Wait 3
+  Cls
+Tmpm = Tmpm / 60
+Tmpd = Tmpd + Tmpm
+Latitude = Tmpd
+Lcd Latitude
+Wait 2
+Goto Exmenu
+' --------------------------------------------------------------------------------------
+Indlg:
+Longtitude = 0
+Tmpd = 0
+Tmpm = 0
+   Locate 1 , 1 : Lcd "Longtitude " ; : Gosub Inpdig
+   If Dig > 9 Then Goto Exmenu
+   Locate 2 , 1 : Lcd Dig ; : Shift Dig , Left , 4 : Tmpd = Dig : Gosub Inpdig
+   Lcd Dig ; "/" ; : Tmpd = Tmpd + Dig : Gosub Inpdig : Lcd Dig ; : Shift Dig , Left , 4
+   Tmpm = Dig : Gosub Inpdig : Lcd Dig ; : Tmpm = Tmpm + Dig : Shift Dig , Left , 4
+   If Tmpd >= 144 Then
+      Tmpd = Tmpd - 54
+   Else
+         If Tmpd >= 128 Then
+         Tmpd = Tmpd - 48
+         Else
+         If Tmpd >= 112 Then
+         Tmpd = Tmpd - 42
+            Else
+            If Tmpd >= 96 Then
+            Tmpd = Tmpd - 36
+             Else
+             If Tmpd >= 80 Then
+             Tmpd = Tmpd - 30
+             Else
+             If Tmpd >= 64 Then
+               Tmpd = Tmpd - 24
+               Else
+               If Tmpd >= 48 Then
+               Tmpd = Tmpd - 18
+               Else
+               If Tmpd >= 32 Then
+               Tmpd = Tmpd - 12
+               Else
+               If Tmpd >= 16 Then
+               Tmpd = Tmpd - 6
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+   If Tmpm >= 144 Then
+      Tmpm = Tmpm - 54
+   Else
+         If Tmpm >= 128 Then
+         Tmpm = Tmpm - 48
+         Else
+         If Tmpm >= 112 Then
+         Tmpm = Tmpm - 42
+            Else
+            If Tmpm >= 96 Then
+            Tmpm = Tmpm - 36
+             Else
+             If Tmpm >= 80 Then
+             Tmpm = Tmpm - 30
+             Else
+             If Tmpm >= 64 Then
+               Tmpm = Tmpm - 24
+               Else
+               If Tmpm >= 48 Then
+               Tmpm = Tmpm - 18
+               Else
+               If Tmpm >= 32 Then
+               Tmpm = Tmpm - 12
+               Else
+               If Tmpm >= 16 Then
+               Tmpm = Tmpm - 6
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+               End If
+   Wait 1
+   Cls
+   Lcd Tmpd
+   Lcd " "
+   Lcd Tmpm
+  Wait 3
+  Cls
+Tmpm = Tmpm / 60
+Tmpd = Tmpd + Tmpm
+Longtitude = Tmpd
+Lcd Longtitude
+Wait 2
+Cls
+Gosub Inutc
+Goto Exmenu
+'--------------------------------------------------------------------------------------
+Inutc:
+   Locate 1 , 1 : Lcd "Input UTC" ; : Gosub Inpdig : If Dig > 9 Then Goto Exmenu
+   Locate 2 , 1 : Lcd Dig ; : Utc = Dig : Dig = 0 : Gosub Inpdig:
+   Utc = Utc * 10
+   Lcd Dig ; : Utc = Utc + Dig : Gosub Inpdig : Lcd Dig ; : Dig = 0
+   Utc = Utc * 10
+   Utc = Utc + Dig
+   Lcd "UTC IS:"
+   Locate 2 , 1
+   Lcd Utc
+   Utc = Utc / 60
+Goto Exmenu
+'--------------------------------------------------------------------------------------
+Inpdig:
+   Gosub Inpk : Dig = Lookup(key , Tabl2)
+Return
+
+Ждатьотж:
+   J = Getkbd() : If J < 16 Then Goto Ждатьотж
+Return
+
+Tormoz:                                                     ' Остановка до нажатия любой клавиши
+   Locate 2 , 1 : Lcd "   Press Key!   "
+T1:
+   Key = Getkbd() : If Key = 16 Then Goto T1
+Return
+
+Clear2:
+   Locate 2 , 1 : Lcd "                " ; : Locate 2 , 1
+Return
+Function Arctan(x As Single) As Single
+   Local Var As Single
+   Var = X * X
+   Var = Var + 1
+   Var = Sqr(var)
+   Var = X / Var
+   Var = Asin(var)
+   Arctan = Var
+End Function
+Function Solve(f As Integer) As Single
+Cls
+ Dim Day As Single
+   Dim N1 As Single
+   Dim Montht As Single
+   Dim N3 As Single
+   Dim Year As Single
+   Year = 2018
+   Dim Dt As Single
+   Montht = Month
+   Dt = D
+   If Dt >= 16 And Dt <= 25 Then
+   Dt = Dt - 6
+   Else
+   If Dt >= 32 And Dt <= 41 Then
+   Dt = Dt - 12
+   Else
+   If Dt >= 48 Then
+   Dt = Dt - 18
+   End If
+   End If
+   End If
+   If Montht > 25 Then
+   Montht = Montht - 12
+   Else
+   If Montht >= 16 And Montht <= 25 Then
+   Montht = Montht - 6
+   End If
+   End If
+   Lcd Str(dt) + " "
+   Lcd Montht
+   Wait 4
+   Cls
+N1 = 275 * Montht
+N1 = N1 / 9
+Montht = Montht + 9
+Montht = Montht / 12
+N3 = 2
+Day = Dt - 30
+Day = N1 + Day
+N3 = Montht * N3
+Day = Day - N3
+'Consts
+   Dim R2d As Single
+   Dim D2r As Single
+   Dim Zenith As Single
+   Zenith = 90.8333
+   R2d = 57.3248407643
+   D2r = 0.01744444444
+   'Longtitude = 77.00438
+  ' Latitude = 52.27401
+'Consts
+Dim Lnghour As Single
+Dim Ti As Single
+Lnghour = Longtitude / 15
+If F = 1 Then
+ Ti = 6 - Lnghour : Ti = Ti / 24 : Ti = Ti + Day
+Else
+ Ti = 18 - Lnghour
+ Ti = Ti / 24
+ Ti = Ti + Day
+End If
+
+'mean alomaly
+Dim Ma As Single
+Ma = 0.9856 * Ti
+Ma = Ma - 3.289
+'True long
+Dim L As Single
+Dim Tmp As Single
+Dim Tmp1 As Single
+Tmp = Ma * D2r
+Tmp = Sin(tmp)
+Tmp = 1.916 * Tmp
+Tmp1 = 2 * Ma
+Tmp1 = Tmp1 * D2r
+Tmp1 = Sin(tmp1)
+Tmp1 = Tmp1 * 0.020
+L = Ma + 282.634
+L = L + Tmp
+L = L + Tmp1
+If L > 360 Then
+L = L - 360
+End If
+If L < 0 Then
+L = L + 360
+End If
+'right ascention
+Dim Ra As Single
+Tmp = L * D2r
+Tmp = Tan(tmp)
+Tmp = 0.91764 * Tmp
+Tmp = Arctan(tmp)
+Ra = R2d * Tmp
+If Ra > 360 Then
+Ra = Ra - 360
+End If
+If Ra < 0 Then
+Ra = Ra + 360
+End If
+
+'Quadrant
+Dim Lquadrant As Single
+Dim Rquadrant As Single
+Tmp = L / 90
+Tmp = Tmp - 0.5
+Tmp = Round(tmp)
+Lquadrant = Tmp * 90
+Tmp = Ra / 90
+Tmp = Tmp - 0.5
+Tmp = Round(tmp)
+Rquadrant = 90 * Tmp
+Ra = Ra + Lquadrant
+Ra = Ra - Rquadrant
+Ra = Ra / 15
+
+'declination
+Dim Sindec As Single
+Dim Cosdec As Single
+Tmp = L * D2r
+Tmp = Sin(tmp)
+Sindec = 0.39782 * Tmp
+Cosdec = Asin(sindec)
+Cosdec = Cos(cosdec)
+
+'hour cosine
+Dim Coshour As Single
+Coshour = Zenith * D2r
+Coshour = Cos(coshour)
+Tmp1 = Latitude * D2r
+Tmp1 = Sin(tmp1)
+Tmp1 = Tmp1 * Sindec
+Tmp = Latitude * D2r
+Tmp = Cos(tmp)
+Tmp = Cosdec * Tmp
+Tmp1 = Tmp1 / Tmp
+Coshour = Coshour - Tmp1
+
+Dim Ha As Single
+Tmp = Acos(coshour)
+
+'Wait 2
+Cls
+
+If F = 1 Then
+Ha = Acos(coshour)
+Ha = Ha * R2d
+Ha = 360 - Ha
+Else
+Ha = Acos(coshour)
+Ha = R2d * Ha
+End If
+Ha = Ha / 15
+
+'local mean time
+Dim Tim As Single
+Tim = 0
+Tim = Tim + Ha
+Tim = Tim + Ra
+Tmp = 0.06571 * Ti
+Tim = Tim - Tmp
+
+Tim = Tim - 6.622
+Tmp1 = Ha + Ra
+
+Dim Ut As Single
+Ut = Tim - Lnghour
+Ut = Ut + Utc
+If Ut > 24 Then
+Ut = Ut - 24
+End If
+If Ut < 0 Then
+Ut = Ut + 24
+End If
+
+Solve = Ut
+End Function
+Solution:
+Cls
+      Dim Ht As Single
+      Dim Mt As Single
+      Ht = H
+      Mt = M
+     If Ht >= 26 Then
+     Ht = Ht - 12
+    Else
+     If Ht >= 13 And Ht < 26 Then
+     Ht = Ht - 6
+     End If
+     End If
+     Cls
+    If Mt >= 80 Then
+   Mt = Mt - 30
+   Else
+   If Mt >= 64 And Mt < 74 Then
+   Mt = Mt - 24
+   Else
+   If Mt >= 48 And Mt < 58 Then
+   Mt = Mt - 18
+   Else
+   If Mt >= 32 And Mt < 42 Then
+   Mt = Mt - 12
+   Else
+   If Mt >= 16 And Mt < 26 Then
+   Mt = Mt - 6
+   End If
+   End If
+   End If
+   End If
+   End If
+   Dim Cur_time As Single
+  Cur_time = Ht * 60
+  Dim Dif As Single
+  Cur_time = Cur_time + Mt
+  Lcd "ct "
+  Lcd Cur_time
+  Wait 2
+  Cls
+  Dim Q As Integer
+  Q = 1
+  Dim Rise As Single
+  Rise = Solve(q)
+  Dim Rise_hour As Single
+  Rise_hour = Rise
+  Rise_hour = Rise_hour - 0.5
+  Rise_hour = Round(rise_hour)
+  Dim Rise_min As Single
+  Rise_min = Rise - Rise_hour
+  Rise_min = Rise_min * 60
+  Rise_min = Round(rise_min)
+
+Cls
+
+
+ Dim Sset As Single
+  Q = 0
+  Sset = Solve(q)
+  Dim Set_hour As Single
+  Set_hour = Sset
+  Set_hour = Set_hour - 0.5
+  Set_hour = Round(set_hour)
+  Dim Set_min As Single
+  Set_min = Sset - Set_hour
+  Set_min = Set_min * 60
+  Set_min = Round(set_min)
+  Erase Set_hour
+  Erase Set_min
+  Rise = Rise * 60
+  Sset = Sset * 60
+  Dif = Sset - Rise
+  Lcd Dif
+  Wait 2
+  Cls
+  Cur_time = Cur_time - Rise
+      Dif = Dif / 8
+      Dif = Cur_time / Dif
+      Dif = Dif - 0.5
+      Dif = Round(dif)
+     Lcd "dif: " + Str(dif)
+  Wait 2
+  Speaker = 1
+  Dif = Dif - 1
+  If Dif < 0 Or Dif > 7 Then
+  Cls
+  Lcd "  Sun is beyond"
+  Locate 2 , 1
+  Lcd "     horizon"
+  Wait 3
+  Cls
+
+  End If
+   If Dif = 0 Then
+   Speaker = 0
+   In4 = 0
+   In2 = 0
+   In1 = 0
+   Wait 5
+   End If
+   If Dif = 1 Then
+   Speaker = 0
+   In4 = 0
+   In2 = 0
+   In1 = 1
+         Wait 5
+   End If
+   If Dif = 2 Then
+   Speaker = 0
+   In4 = 0
+   In2 = 1
+   In1 = 0
+   Wait 5
+   End If
+   If Dif = 3 Then
+   Speaker = 0
+   In4 = 0
+   In2 = 1
+   In1 = 1
+   Wait 5
+   End If
+   If Dif = 4 Then
+   Speaker = 0
+   In4 = 1
+   In2 = 0
+   In1 = 1
+   Wait 5
+   End If
+   If Dif = 5 Then
+   Speaker = 0
+   In4 = 1
+   In2 = 0
+   In1 = 1
+   Wait 5
+   End If
+   If Dif = 6 Then
+   Speaker = 0
+   In4 = 1
+   In2 = 1
+   In1 = 0
+   Wait 5
+   End If
+   If Dif = 7 Then
+   Speaker = 0
+   In4 = 1
+   In2 = 1
+   In1 = 1
+   Wait 5
+   End If
+   'Gosub Pik
+Return
+' ====================================================================================
+Init:                                                       ' Организация прерывания от таймера
+    I2cstart                                                ' generate start
+    I2cwbyte &HA0                                           ' write address самой ИМС PCF8583
+    I2cwbyte 07                                             ' select Timer register как адрес начальной ячейки для записи
+    I2cwbyte &H99                                           ' Write in Timer register период тиков 100-10=90 сек.
+    I2cwbyte &B00001010                                     ' Write in "Alarm Control": Разреш. прерыв-й по таймеру в секундах.
+    I2cstop                                                 ' generate stop
+Setstatus:
+' ====================================================================================
+    I2cstart                                                ' generate start
+    I2cwbyte &HA0                                           ' Настройка на запись
+    I2cwbyte 0                                              ' select status (а не control!) register
+' Разрешим Alarm по таймеру и зададим немаскированное чтение даты и месяца: (в отличие от версии 3.2 и ниже)
+    I2cwbyte &B00000100                                     ' preset flags of Alarm mode (Alarm by Timer)
+    I2cstop                                                 ' generate stop
+    Waitms 10
+' ====================================================================================
+Return
+Promt:
+   Cls : Cursor Off : Lcd "Test LED Clock 5"
+   Gosub Pik                                                ' -----  Звук первого запуска  ----
+   Locate 2 , 1 : Lcd "With SettingTime"
+Return
+End
+
+' *******************************************************************************
+Sub Gettime
+    I2cstart                                                'generate start
+    I2cwbyte &HA0                                           'write addres of PCF8583
+    I2cwbyte 2                                              'select second register
+    I2cstart                                                'generate repeated start
+    I2cwbyte &HA1                                           'write address for reading info
+    I2crbyte S , Ack                                        'read seconds
+    I2crbyte M , Ack                                        'read minutes
+    I2crbyte H , Ack                                        'read hours
+    I2crbyte Yd , Ack                                       'read year and days
+    I2crbyte Wm , Nack                                      'read weekday and month
+    I2cstop                                                 'generate stop
+End Sub
+' ------------------------------------------------------------------------------
+Sub Settime(s As Byte , M As Byte , H As Byte , D As Byte , Month As Byte)
+    'values are stored as BCD values so convert the values first
+''    S = Makebcd(s)                           'seconds
+''    M = Makebcd(m)                           'minutes
+''    H = Makebcd(h)                           'hours
+''    D = Makebcd(d)                           'days
+''    Month = Makebcd(month)                   'months
+
+     I2cstart                                               'generate start
+    I2cwbyte &HA0                                           'write address
+    I2cwbyte 0                                              'select control register
+    I2cwbyte 8                                              'set year and day bit for masking
+    I2cstop                                                 'generate stop
+
+    I2cstart                                                'generate start
+    I2cwbyte &HA0                                           'write mode
+    I2cwbyte 2                                              'select seconds Register
+    I2cwbyte S                                              'write seconds
+    I2cwbyte M                                              'write minutes
+    I2cwbyte H                                              'Write Hours
+    I2cwbyte D                                              'write days
+    I2cwbyte Month                                          'write months
+    I2cstop
+End Sub
+
+End
+' ------------------------------------------------------------------------------
+Tabl2:
+Data 13 , 12 , 11 , 10 , 14 , 9 , 6 , 3 , 0 , 8 , 5 , 2 , 15 , 7 , 4 , 1
+'                        #                                 *
+' ------------------------------------------------------------------------------
+'(
+Codasc:
+Ascii = Lookupstr(kkl , Tabl1)
+Return
+' ------------------------------------------------------------------------------
+' Коды клавиш десятичные:    Шестнадцатиричные:     "Живая" клавиатура:
+'                                                        _________
+'    15 11 07 03                0F 0B 07 03             | 1 2 3 A |
+'    14 10 06 02                0E 0A 06 02             | 4 5 6 B |
+'    13 09 05 01                0D 09 05 01             | 7 8 9 C |
+'    12 08 04 00                0C 08 04 00             | * 0 # D |
+'                                                        ---------
+End
+Tabl1:
+Data "," , "C" , "B" , "A" , "#" , "9" , "6" , "3" , "0" , "8" , "5" , "2" , _
+                  "*" , "7" , "4" , "1"
+')
+' ------------------------------------------------------------------------------
