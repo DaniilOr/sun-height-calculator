@@ -3,8 +3,7 @@
 ' Подсвечивает LCD от нестабилизированного источника 7-12 Вольт.
 '
 ' Конфигурационные биты при программировании в PONY: SPIEN, EESAVE = птички,
-' остальные без птичек. Начинать прогр-е ~ на 20-й секунде предыдущей минуты!
-' Прерывать верификацию по 6 сигналу точного времени!
+
 $large                                                      ' установить большую модель памяти!
 $regfile = "m168def.dat"                                    ' установить модель микроконтроллера
 $crystal = 8000000                                          ' частота генератора 8 МГц
@@ -93,7 +92,7 @@ M1:
    End Select                                               'закончить
 
 Exmenu:
-                                      ' Отладочная строка $$$$$$$$$$$$$$$
+                                      ' Отладочная строка 
 Goto Indik
 ' ------------------------------------------------------------------------------------------
 ' ------------ Ввод кода нажатой клавиши с ожиданием её нажатия и отпускания ---------------
@@ -116,6 +115,7 @@ Pik:
    Sound Speaker , Pulses , Periods : Speaker = 1           ' Звук, затем Выкл LED-Ind
 Return
 ' -------------------------------------------------------------------------------------
+' ввод времени, для которого ведется расчет
 Intime:
    Locate 1 , 1 : Lcd "Time H,Min.Sec=0" ; : Gosub Inpdig
    Locate 2 , 1 : Lcd Dig ; : Shift Dig , Left , 4 : H = Dig : Gosub Inpdig
@@ -124,6 +124,7 @@ Intime:
    Call Settime(h , M , 00 , D , Month) : Waitms 10
 Goto Exmenu
 ' -------------------------------------------------------------------------------------
+' ввод даты, для которой ведется расчет
 Indat:
    Locate 1 , 1 : Lcd "Input Date DD/MM" ; : Gosub Inpdig : If Dig > 9 Then Goto Exmenu
    Locate 2 , 1 : Lcd Dig ; : Shift Dig , Left , 4 : D = Dig : Gosub Inpdig
@@ -132,6 +133,7 @@ Indat:
    Call Settime(h , M , S , D , Month) : Waitms 10
 Goto Exmenu
 ' --------------------------------------------------------------------------------------
+' ввод географической широты
 Inshir:
 Latitude = 0
 Tmpm = 0
@@ -224,6 +226,7 @@ Lcd Latitude
 Wait 2
 Goto Exmenu
 ' --------------------------------------------------------------------------------------
+' ввод географической долготы
 Indlg:
 Longtitude = 0
 Tmpd = 0
@@ -349,6 +352,7 @@ Return
 Clear2:
    Locate 2 , 1 : Lcd "                " ; : Locate 2 , 1
 Return
+' функция поиска арктангенса
 Function Arctan(x As Single) As Single
    Local Var As Single
    Var = X * X
@@ -358,6 +362,7 @@ Function Arctan(x As Single) As Single
    Var = Asin(var)
    Arctan = Var
 End Function
+' сам алгоритм
 Function Solve(f As Integer) As Single
 Cls
  Dim Day As Single
